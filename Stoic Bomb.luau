@@ -174,7 +174,7 @@ local function createExplosionHitbox(char, hrp, session, params)
 		-- Checks if the target is still alive,
 		-- doesn't have IFrames or other invincible states,
 		-- and is not the same as the attacking character
-		if not MoveUtils.validateTarget(
+		if not MoveUtils.validateHit(
 			char, 
 			hitChar, 
 			false -- false means it's not blockable
