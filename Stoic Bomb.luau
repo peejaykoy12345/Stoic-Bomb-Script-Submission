@@ -103,7 +103,7 @@ local function activateFallVFX(fallVFX, fallVFXWeld, hrp, torso, session)
 
 	task.delay(CONFIG.VFX_CLEANUP_DELAYS.FALL, function()
 		fallVFXWeld:Destroy()
-		session:DeleteVFX(fallVFX)
+		session:DeleteVFX(fallVFX) -- Returns the fallVFX to the pool
 	end)
 end
 
@@ -130,7 +130,7 @@ local function spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
 		torso
 	)
 	
-	-- Destroy fallVFXWeld 
+	-- Return it anyway if it reaches this point 
 	fallVFXWeld:Destroy()
 	session:DeleteVFX(fallVFX)
 	
