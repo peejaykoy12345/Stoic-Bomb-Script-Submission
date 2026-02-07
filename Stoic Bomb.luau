@@ -195,7 +195,7 @@ local function createExplosionHitbox(char, hrp, session, params)
 		
 		-- Ragdoll the victim
 		local ragdollTrigger = hitChar:FindFirstChild("RagdollTrigger")
-		if ragdollTrigger then
+		if ragdollTrigger then -- RagdollTrigger has a listener which ragdolls the victim if it turns to true and unragdoll if false
 			ragdollTrigger.Value = true
 			task.delay(CONFIG.RAGDOLL_DURATION, function()
 				-- Checks if it even still has a parent
