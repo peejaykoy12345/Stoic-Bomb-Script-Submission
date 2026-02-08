@@ -10,7 +10,6 @@ local CooldownManager = require(Libraries.Combat.CooldownManager) -- Handles coo
 -- but with more reliable .Touched function utilizing :GetPartsInBounds()
 local Hitbox = require(Libraries.Combat.Hitbox) -- Hitbox
 local Damage = require(Libraries.Combat.Damage) -- Handles the damage
-local StateManager = require(Libraries.Combat.StateManager) -- Handles states
 local MiscellaneousUtils = require(Libraries.MiscellaneousUtils) -- Common utils outside of moves
 local MoveUtils = require(Libraries.Combat.MoveUtils) -- Common move utilities
 local MoveSession = require(Libraries.Combat.MoveSession) -- For move sessions (easy stop or pause)
@@ -23,16 +22,18 @@ local CraterModule = require(Libraries.Effects.CraterModule) -- For craters
 -- pile up on memory
 local PoolingServiceVFX = require(Libraries.PerformanceLibraries.PoolingServiceVFX) -- For performance
 
+local EffectsFolder = workspace.Effects
+
 -- Config so that I can easily tweak move settings
 local CONFIG = {
-	MOVE_NAME = script.Name,
+	MOVE_NAME = script.Name, -- Move name (in this case it is the script name)
 	CRATER = {
 		SMALL = { Radius = 22, rockSize = 4 },
 		LARGE = { Radius = 33, rockSize = 5 },
-		Y_OFFSET = Vector3.new(0, 0, 0)
+		Y_OFFSET = Vector3.new(0, 0, 0) -- No offset but in the future I might tweak this
 	},
 	HITBOX = {
-		SIZE = Vector3.new(40, 40, 40)
+		SIZE = Vector3.new(40, 40, 40) -- Big hitbox because  this is an aoe move
 	},
 	RAGDOLL_DURATION = 1, -- Duration for ragdoll
     -- Time for automatic clean up (failsafe just in case session doesn't)
@@ -48,8 +49,8 @@ local CONFIG = {
 		DURATION = 0.5, -- The cooldown for the knockback
 	},
 	COOLDOWN = 5, -- The cooldown in seconds
-	DAMAGE = 100,
-	DEBUG = false, -- 
+	DAMAGE = 100, -- Damage of the explosion
+	DEBUG = false, -- If it is in debug 
 }
 
 local ANIMATION_IDS = {
@@ -60,6 +61,7 @@ local ANIMATION_IDS = {
 local ASSETS = {
 	FLY_VFX = script.Stoic.Fly.Fly.Fly,
 	FALL_VFX = script.Stoic.Fall.Fall.Fall,
+    -- The explosion VFX
 	BOMB_MIDDLE_VFX = script.Stoic["Stoic Bomb"].Middle,
 	BOMB_FLOOR_VFX = script.Stoic["Stoic Bomb"].Floor,
 	SMOKE_VFX = script.Stoic.Smoke.Smoke
@@ -81,16 +83,18 @@ local function createInitialCraters(position)
 end
 
 local function setupFlyVFX(hrp, torso, session)
-	local flxVFX = PoolingServiceVFX.GetPooledObject(ASSETS.FLY_VFX)
-	flxVFX.CFrame = hrp.CFrame
-	flxVFX.Parent = workspace.Effects
-
-	session:AddVFX(flxVFX)
+	local flxVFX = PoolingServiceVFX.GetPooledObject(ASSETS.FLY_VFX) -- Get the vfx from the pool (creates it if not there)
+	flxVFX.CFrame = hrp.CFrame -- Set flyVFX to the CFrame
+	flxVFX.Parent = EffectsFolder -- Put it in the effects folder
+    -- Add reference fallVFX reference to session so that session can return it to the pool once it ends
+	session:AddVFX(flxVFX) 
 	
+    -- Weld the torso to the flyVFX
 	local weld = Instance.new("Weld", flxVFX)
-	weld.Part0 = torso
+	weld.Part0 = torso -- Welded to torso because it looks better
 	weld.Part1 = flxVFX
 	
+    -- Auto return to pool just in case session fails (never happened before but just in case)
 	task.delay(CONFIG.VFX_CLEANUP_DELAYS.FLY, function()
 		weld:Destroy()
 		-- Let session return the pooled object so that the session can removes its reference to it
@@ -103,18 +107,19 @@ local function setupFallVFX(hrp, torso, session)
 	local fallVFX = PoolingServiceVFX.GetPooledObject(ASSETS.FALL_VFX)
 	local fallVFXWeld = Instance.new("Weld", fallVFX)
 
-	session:AddVFX(fallVFX)
+	session:AddVFX(fallVFX) -- Add fallVFX reference to the session class
 
-	return fallVFX, fallVFXWeld
+	return fallVFX, fallVFXWeld -- Return both the fallVFX and the weld so it can be both destroy or returned
 end
 
 -- Then activate here
 local function activateFallVFX(fallVFX, fallVFXWeld, hrp, torso, session)
 	-- FallVFX or also known as the FlameVFX
-	fallVFX.CFrame = hrp.CFrame
-	fallVFX.Parent = workspace.Effects
+	fallVFX.CFrame = hrp.CFrame -- Set its CFrame to the hrp
+	fallVFX.Parent = EffectsFolder -- Then put it in worksplace.Effects
 
-	fallVFXWeld.Part0 = torso
+    -- Weld it to the torso
+	fallVFXWeld.Part0 = torso -- Welded to torso because it looks better
 	fallVFXWeld.Part1 = fallVFX
 	-- This makes it so that the weld attaches without snapping or offset issues
 	fallVFXWeld.C0 = fallVFX.CFrame:ToObjectSpace(torso.CFrame * CFrame.new(0, 0, 0))
@@ -128,29 +133,30 @@ end
 -- Helper function to avoid repetition
 -- Returns the pooled object, sets an automatic return to pool time and sets the cframe
 local function addVFXWithDelay(vfx_temp, delayTime, session, cframe_offset, torso)
-	local vfx = PoolingServiceVFX.GetPooledObject(vfx_temp)
-	vfx.Parent = workspace.Effects
-	vfx.CFrame = torso.CFrame * cframe_offset
+	local vfx = PoolingServiceVFX.GetPooledObject(vfx_temp) -- Get the pooled vfx
+	vfx.Parent = EffectsFolder
+	vfx.CFrame = torso.CFrame * cframe_offset -- Add the offset if any
 	session:AddVFX(vfx) -- Add reference to the VFX
+    -- Failsafe just in case session doesn't delete it in time
 	task.delay(delayTime, function() 
 		-- Returns the object to the pool after the delay 
 		-- session will do it so that session also removes its reference to it
 		session:DeleteVFX(vfx) 
 	end)
 	
-	return vfx
+	return vfx -- Return it for use
 end
 
 local function spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
 	local bombMiddle = addVFXWithDelay(
-		ASSETS.BOMB_MIDDLE_VFX,  
+		ASSETS.BOMB_MIDDLE_VFX, 
 		CONFIG.VFX_CLEANUP_DELAYS.BOMB_MIDDLE,
 		session, 
-		CFrame.new(0, 0, 0), 
+		CFrame.new(0, 0, 0), -- No offset
 		torso
 	)
 	
-	-- Return it anyway if it reaches this point 
+	-- Return it anyway if it reaches this point (Once it's explosion time we dont need fallVFX anymore)
 	fallVFXWeld:Destroy()
 	session:DeleteVFX(fallVFX)
 	
@@ -158,7 +164,7 @@ local function spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
 		ASSETS.BOMB_FLOOR_VFX, 
 		CONFIG.VFX_CLEANUP_DELAYS.BOMB_FLOOR, 
 		session, 
-		CFrame.new(0, 0, 0), 
+		CFrame.new(0, 0, 0), -- No offset
 		torso
 	)
 	
@@ -171,32 +177,37 @@ local function spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
 	)
 	
 	-- Emit the full explosion vfx
+    -- Loops through particle emitters and using their emit count attribute to get how many to emit
 	MiscellaneousUtils.emitEveryParticleEmitter(bombFloor)
 	MiscellaneousUtils.emitEveryParticleEmitter(bombMiddle)
 	MiscellaneousUtils.emitEveryParticleEmitter(smokeVFX)
 end
 
-local function createExplosionHitbox(char, hrp, session, params)
+local function createExplosionHitbox(char, hrp, session)
 	-- Creates a custom hitbox
-	local hitbox = Hitbox.CreateHitbox()
+    -- Default mode is "CharacterHit" which means only one hit per model
+	local hitbox = Hitbox.CreateHitbox() -- Using Open source module to create hitbox
 	hitbox.Size = CONFIG.HITBOX.SIZE
 	hitbox.Visualizer = CONFIG.DEBUG -- Visualizer = true if debug is true else false
 	hitbox.CFrame = hrp.CFrame -- Hitbox is in the middle of the model
 
 	-- Reference hitbox to session so that it is included in session:Stop()
-	session.hitbox = hitbox
-	hitbox:Start()
+    -- It stops the hitbox and disconnects the connection
+    -- hitbox:Stop() automatically stops the Touched connection and session calls it in session:Stop()
+	session.hitbox = hitbox 
+	hitbox:Start() -- It starts the hitbox visualizer and allows us to connect Touched
 
 	local damage = CONFIG.DAMAGE
 
+    -- Connect the touched event ()
 	hitbox.Touched:Connect(function(hitChar: Model) -- hitbox.Touched is stopped in session:Stop()
 		
 		-- Checks if the target is still alive,
 		-- doesn't have IFrames or other invincible states,
 		-- and is not the same as the attacking character
 		if not MoveUtils.validateHit(
-			char, 
-			hitChar, 
+			char, -- Attacker
+			hitChar, -- Victim
 			false -- false means it's not blockable
 		) then return end
 		
@@ -223,6 +234,7 @@ local function createExplosionHitbox(char, hrp, session, params)
 			ragdollTrigger.Value = true
 			task.delay(CONFIG.RAGDOLL_DURATION, function()
 				-- Checks if it even still has a parent
+                -- Failsafe just in case it throws an error
 				if ragdollTrigger.Parent then
 					ragdollTrigger.Value = false
 				end
@@ -231,13 +243,18 @@ local function createExplosionHitbox(char, hrp, session, params)
 	end)
 end
 
-local function handleMainSequence(char, session, params, startupTrack)
+local function handleMainSequence(char, session)
+    -- Check if it still has these things just in case
 	local hrp = char:FindFirstChild("HumanoidRootPart")
 	local torso = char:FindFirstChild("Torso")
 	if not hrp or not torso then return end
 
+    -- It is the falling sequence of the move where the fly, flame start, etc markers will be triggered
 	local mainTrack, cleanUp = AnimationPlayer.PlayAnimation(char, ANIMATION_IDS.MAIN)
 
+    -- cleanUp only runs if the track ended or stopped but we reference the cleanUp function to
+    -- session just in case cleanUp doesn't run autmatically
+    -- runs mainTrack:Stop() and cleanUp() on session:Stop()
 	session:AddAnimation(mainTrack, cleanUp)
 
 	local fallVFX, fallVFXWeld = setupFallVFX(hrp, torso, session)
@@ -255,14 +272,16 @@ local function handleMainSequence(char, session, params, startupTrack)
 			-- This is where the explosion vfx happens
 			spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
 			-- Setup the hitbox for the explosion
-			createExplosionHitbox(char, hrp, session, params)
+			createExplosionHitbox(char, hrp, session)
 		end,
 	}
 	
 	-- Once track is over Stop it
-	mainTrack.Stopped:Connect(function()
+	local conn = mainTrack.Stopped:Connect(function()
 		session:Stop()
 	end)
+
+    session:BulkAddAnimationMarker({conn})
 	
 	-- Connect the connections to main track then store them in session
 	local connections = MoveUtils.connectMarkerSignals(mainTrack, mainTrackMarkers) 
@@ -271,24 +290,25 @@ end
 
 -- Main Move Function
 return {
+    -- Params contain additional info like camera cframe, the player if the player trigger this,
+    -- Params is sometimes important because some moves require camera CFrame or the player not just 
+    -- in validating if the player deserves to use this move
+    -- Gets char as parameter instead of player so that it is npc friendly
 	run = function(char: Model, params: any)
 		-- Checks if the player has a state that prevents him from using a move
 		-- Checks cooldown
+        -- We get the hrp because in all moves we need the hrp of the model
+        -- Params is sent here because it checks some player related stuff that npc doesn't have
+        -- (There's no player only check yet but we still pass it through just in case we scale it with skill trees)
 		local isValid, hrp, reason = MoveUtils.validateMoveRequirements(char, params, CONFIG.MOVE_NAME)
-		if not isValid then
+		if not isValid then -- Reason variable is used only when debugging
 			return
 		end
 
-        -- Start the startupTrack
-		local startupTrack = AnimationPlayer.PlayAnimation(char, ANIMATION_IDS.STARTUP)
-
-		local hrp = char:FindFirstChild("HumanoidRootPart")
 		local torso = char:FindFirstChild("Torso")
 		if not hrp or not torso then return end -- Safety
-
-		createInitialCraters(hrp.Position) -- Purely design choice craters make the move more strong
 	
-		-- Make a move session
+		-- Creates a move session class
 		-- If session stops everything stops
 		-- Handles any possible errors
 		-- References animations, vfx, sounds to pause or stop them
@@ -328,9 +348,16 @@ return {
 		-- already running.
 		if not session then return end
 
-		session:AddAnimation(startupTrack) -- Reference the track in session so session can stop it or pause it
+         -- Start the startupTrack
+		local startupTrack, cleanUp = AnimationPlayer.PlayAnimation(char, ANIMATION_IDS.STARTUP)
 
-		session:Start()
+		session:AddAnimation(startupTrack, cleanUp) -- Reference the track in session so session can stop it or pause it
+
+        createInitialCraters(hrp.Position) -- Purely design choice craters make the move feel stronger
+
+        -- Start is required here because it has a failsafe to not be able to use :Stop() if it hasn't 
+        -- started
+		session:Start()   
 		
 		local startupTrackHitConnection: RBXScriptConnection?
 
@@ -338,7 +365,7 @@ return {
 			-- Stop the startUp track to begin the falling sequence
 			startupTrack:Stop()
 			startupTrackHitConnection:Disconnect()
-			handleMainSequence(char, session, params, startupTrack)
+			handleMainSequence(char, session)
 		end)
 	end,
 }
