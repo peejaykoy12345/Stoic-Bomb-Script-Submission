@@ -9,6 +9,7 @@ local CooldownManager = require(Libraries.Combat.CooldownManager) -- Handles coo
 -- Hitbox creates a hitbox object where I can modify the CFrame, Size, etc just like a normal basepart
 -- but with more reliable .Touched function utilizing :GetPartsInBounds()
 local Hitbox = require(Libraries.Combat.Hitbox) -- Hitbox
+-- Used together mostly with Knockback because it produces a satisfying effect when damaging someone
 local Damage = require(Libraries.Combat.Damage) -- Handles the damage
 local MiscellaneousUtils = require(Libraries.MiscellaneousUtils) -- Common utils outside of moves
 local MoveUtils = require(Libraries.Combat.MoveUtils) -- Common move utilities
@@ -25,6 +26,8 @@ local PoolingServiceVFX = require(Libraries.PerformanceLibraries.PoolingServiceV
 local EffectsFolder = workspace.Effects
 
 -- Config so that I can easily tweak move settings
+-- Also makes it easier for the balance team or other devs who may not know how to code
+-- modify it more easily and safely
 local CONFIG = {
 	MOVE_NAME = script.Name, -- Move name (in this case it is the script name)
 	CRATER = {
@@ -51,6 +54,7 @@ local CONFIG = {
 	COOLDOWN = 5, -- The cooldown in seconds
 	DAMAGE = 100, -- Damage of the explosion
 	DEBUG = false, -- If it is in debug 
+    BLOCKABLE = false,
 }
 
 local ANIMATION_IDS = {
@@ -87,11 +91,11 @@ local function setupFlyVFX(hrp, torso, session)
 	flxVFX.CFrame = hrp.CFrame -- Set flyVFX to the CFrame
 	flxVFX.Parent = EffectsFolder -- Put it in the effects folder
     -- Add reference fallVFX reference to session so that session can return it to the pool once it ends
-	session:AddVFX(flxVFX) 
+	session:AddVFX(flxVFX) -- Adding to session ensures VFX is auto cleaned up if move ends early or is interrupted
 	
     -- Weld the torso to the flyVFX
 	local weld = Instance.new("Weld", flxVFX)
-	weld.Part0 = torso -- Welded to torso because it looks better
+	weld.Part0 = torso -- Welded to torso because it looks better (according to feedback I got from my vfx artist)
 	weld.Part1 = flxVFX
 	
     -- Auto return to pool just in case session fails (never happened before but just in case)
@@ -107,7 +111,7 @@ local function setupFallVFX(hrp, torso, session)
 	local fallVFX = PoolingServiceVFX.GetPooledObject(ASSETS.FALL_VFX)
 	local fallVFXWeld = Instance.new("Weld", fallVFX)
 
-	session:AddVFX(fallVFX) -- Add fallVFX reference to the session class
+	session:AddVFX(fallVFX) -- Adding to session ensures VFX is auto cleaned up if move ends early or is interrupted
 
 	return fallVFX, fallVFXWeld -- Return both the fallVFX and the weld so it can be both destroy or returned
 end
@@ -119,7 +123,7 @@ local function activateFallVFX(fallVFX, fallVFXWeld, hrp, torso, session)
 	fallVFX.Parent = EffectsFolder -- Then put it in worksplace.Effects
 
     -- Weld it to the torso
-	fallVFXWeld.Part0 = torso -- Welded to torso because it looks better
+	fallVFXWeld.Part0 = torso -- Welded to torso because it looks better (according to feedback I got from my vfx artist)
 	fallVFXWeld.Part1 = fallVFX
 	-- This makes it so that the weld attaches without snapping or offset issues
 	fallVFXWeld.C0 = fallVFX.CFrame:ToObjectSpace(torso.CFrame * CFrame.new(0, 0, 0))
@@ -135,8 +139,9 @@ end
 local function addVFXWithDelay(vfx_temp, delayTime, session, cframe_offset, torso)
 	local vfx = PoolingServiceVFX.GetPooledObject(vfx_temp) -- Get the pooled vfx
 	vfx.Parent = EffectsFolder
+    -- We add offset so that vfx can be positioned better
 	vfx.CFrame = torso.CFrame * cframe_offset -- Add the offset if any
-	session:AddVFX(vfx) -- Add reference to the VFX
+	session:AddVFX(vfx) -- Adding to session ensures VFX is auto cleaned up if move ends early or is interrupted
     -- Failsafe just in case session doesn't delete it in time
 	task.delay(delayTime, function() 
 		-- Returns the object to the pool after the delay 
@@ -144,7 +149,7 @@ local function addVFXWithDelay(vfx_temp, delayTime, session, cframe_offset, tors
 		session:DeleteVFX(vfx) 
 	end)
 	
-	return vfx -- Return it for use
+	return vfx -- Returns it so that so other code can use it like calling MiscellaneousUtils.emitEveryParticleEmitter(vfx) on it
 end
 
 local function spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
@@ -205,14 +210,20 @@ local function createExplosionHitbox(char, hrp, session)
 		-- Checks if the target is still alive,
 		-- doesn't have IFrames or other invincible states,
 		-- and is not the same as the attacking character
+        -- It validates the hit to see if it should even go through
+        -- Without this, the attacker will be able to hit himself or an invincible or someone with iframes
+        -- can be hit
+        -- Or a blocking person will be hit even if they blocking properly
 		if not MoveUtils.validateHit(
 			char, -- Attacker
 			hitChar, -- Victim
-			false -- false means it's not blockable
+		    CONFIG.BLOCKABLE -- false means it's not blockable
 		) then return end
 		
         -- When session:Stop() is called an auto stun punish is called on the user
         -- This feature is toggleable on session configs
+        -- Most moves have stun punish once session ends so I made it automatic to apply stun once session ends
+        -- For some moves there is targetStates or targetProperties and AddTarget applied that automatically
 		session:AddTarget(hitChar) -- For auto stun punish
 
         -- Applies damage
@@ -261,6 +272,7 @@ local function handleMainSequence(char, session)
 	
     -- Store animation marker name as keys and the value is the callback
     -- This makes connecting markers like this more cleaner
+    -- We use markers because task.wait or task.delay is unreliable
 	local mainTrackMarkers = {
 		["Fly"] = function()
 			setupFlyVFX(hrp, torso, session)
@@ -284,6 +296,7 @@ local function handleMainSequence(char, session)
     session:BulkAddAnimationMarker({conn})
 	
 	-- Connect the connections to main track then store them in session
+    -- We store it so session can disconnect them if it needs to e.g session:Stop()
 	local connections = MoveUtils.connectMarkerSignals(mainTrack, mainTrackMarkers) 
 	session:BulkAddAnimationMarker(connections) -- Session auto disconnects them if :Stop() is called
 end
@@ -363,6 +376,7 @@ return {
 
 		startupTrackHitConnection = startupTrack:GetMarkerReachedSignal("Hit"):Connect(function()
 			-- Stop the startUp track to begin the falling sequence
+            -- We stop it just in case it interferes with the main animation
 			startupTrack:Stop()
 			startupTrackHitConnection:Disconnect()
 			handleMainSequence(char, session)
