@@ -1,14 +1,15 @@
+-- Stoic bomb move module for both player and npcs
 local Libraries = game:GetService("ServerScriptService").Libraries
-local AnimationPlayer = require(Libraries.AnimationPlayer)
-local CooldownManager = require(Libraries.Combat.CooldownManager)
-local Hitbox = require(Libraries.Combat.Hitbox)
-local Damage = require(Libraries.Combat.Damage)
-local StateManager = require(Libraries.Combat.StateManager)
-local MiscellaneousUtils = require(Libraries.MiscellaneousUtils)
-local MoveUtils = require(Libraries.Combat.MoveUtils)
-local MoveSession = require(Libraries.Combat.MoveSession)
-local Knockback = require(Libraries.Combat.Knockback)
-local CraterModule = require(Libraries.Effects.CraterModule)
+local AnimationPlayer = require(Libraries.AnimationPlayer) -- Plays the animations
+local CooldownManager = require(Libraries.Combat.CooldownManager) -- Handles cooldowns
+local Hitbox = require(Libraries.Combat.Hitbox) -- Hitbox
+local Damage = require(Libraries.Combat.Damage) -- Handles the damage
+local StateManager = require(Libraries.Combat.StateManager) -- Handles states
+local MiscellaneousUtils = require(Libraries.MiscellaneousUtils) -- Common utils outside of moves
+local MoveUtils = require(Libraries.Combat.MoveUtils) -- Common move utilities
+local MoveSession = require(Libraries.Combat.MoveSession) -- For move sessions (easy stop or pause)
+local Knockback = require(Libraries.Combat.Knockback) -- For velocity and knockback
+local CraterModule = require(Libraries.Effects.CraterModule) -- For craters
 local PoolingServiceVFX = require(Libraries.PerformanceLibraries.PoolingServiceVFX) -- For performance
 
 local CONFIG = {
@@ -21,7 +22,8 @@ local CONFIG = {
 	HITBOX = {
 		SIZE = Vector3.new(40, 40, 40)
 	},
-	RAGDOLL_DURATION = 1,
+	RAGDOLL_DURATION = 1, -- Duration for ragdoll
+    -- Time for automatic clean up (failsafe just in case session doesn't)
 	VFX_CLEANUP_DELAYS = {
 		FLY = 1.75,
 		FALL = 1.75,
@@ -30,17 +32,17 @@ local CONFIG = {
 		SMOKE = 5
 	},
 	KNOCKBACK = {
-		POWER = 50,
-		DURATION = 0.5,
+		POWER = 50, -- The speed of knockback
+		DURATION = 0.5, -- The cooldown for the knockback
 	},
-	COOLDOWN = 5,
+	COOLDOWN = 5, -- The cooldown in seconds
 	DAMAGE = 100,
-	DEBUG = false,
+	DEBUG = false, -- 
 }
 
 local ANIMATION_IDS = {
-	STARTUP = 101641222878356,
-	MAIN = 138522549693699
+	STARTUP = 101641222878356, -- For the jump part
+	MAIN = 138522549693699 -- Falling part
 }
 
 local ASSETS = {
@@ -52,6 +54,7 @@ local ASSETS = {
 }
 
 local function createInitialCraters(position)
+    -- Creates craters at the position + offset
 	CraterModule.formCrater({
 		Position = position + CONFIG.CRATER.Y_OFFSET,
 		Radius = CONFIG.CRATER.SMALL.Radius,
@@ -82,6 +85,7 @@ local function setupFlyVFX(hrp, torso, session)
 	end)
 end
 
+-- Get it from the pool
 local function setupFallVFX(hrp, torso, session)
 	local fallVFX = PoolingServiceVFX.GetPooledObject(ASSETS.FALL_VFX)
 	local fallVFXWeld = Instance.new("Weld", fallVFX)
@@ -91,6 +95,7 @@ local function setupFallVFX(hrp, torso, session)
 	return fallVFX, fallVFXWeld
 end
 
+-- Then activate here
 local function activateFallVFX(fallVFX, fallVFXWeld, hrp, torso, session)
 	-- FallVFX or also known as the FlameVFX
 	fallVFX.CFrame = hrp.CFrame
@@ -107,6 +112,8 @@ local function activateFallVFX(fallVFX, fallVFXWeld, hrp, torso, session)
 	end)
 end
 
+-- Helper function to avoid repetition
+-- Returns the pooled object, sets an automatic return to pool time and sets the cframe
 local function addVFXWithDelay(vfx_temp, delayTime, session, cframe_offset, torso)
 	local vfx = PoolingServiceVFX.GetPooledObject(vfx_temp)
 	vfx.Parent = workspace.Effects
@@ -123,8 +130,8 @@ end
 
 local function spawnExplosionVFX(torso, fallVFXWeld, fallVFX, session)
 	local bombMiddle = addVFXWithDelay(
-		ASSETS.BOMB_MIDDLE_VFX, 
-		CONFIG.VFX_CLEANUP_DELAYS.BOMB_MIDDLE, 
+		ASSETS.BOMB_MIDDLE_VFX,  
+		CONFIG.VFX_CLEANUP_DELAYS.BOMB_MIDDLE,
 		session, 
 		CFrame.new(0, 0, 0), 
 		torso
@@ -160,8 +167,8 @@ local function createExplosionHitbox(char, hrp, session, params)
 	-- Creates a custom hitbox
 	local hitbox = Hitbox.CreateHitbox()
 	hitbox.Size = CONFIG.HITBOX.SIZE
-	hitbox.Visualizer = CONFIG.DEBUG
-	hitbox.CFrame = hrp.CFrame
+	hitbox.Visualizer = CONFIG.DEBUG -- Visualizer = true if debug is true else false
+	hitbox.CFrame = hrp.CFrame -- Hitbox is in the middle of the model
 
 	-- Reference hitbox to session so that it is included in session:Stop()
 	session.hitbox = hitbox
@@ -212,12 +219,14 @@ local function handleMainSequence(char, session, params, startupTrack)
 	local torso = char:FindFirstChild("Torso")
 	if not hrp or not torso then return end
 
-	local mainTrack, cleanUp = AnimationPlayer.PlayAnimation(char, ANIMATION_IDS.MAIN, true)
+	local mainTrack, cleanUp = AnimationPlayer.PlayAnimation(char, ANIMATION_IDS.MAIN)
 
 	session:AddAnimation(mainTrack, cleanUp)
 
 	local fallVFX, fallVFXWeld = setupFallVFX(hrp, torso, session)
 	
+    -- Store animation marker name as keys and the value is the callback
+    -- This makes connecting markers like this more cleaner
 	local mainTrackMarkers = {
 		["Fly"] = function()
 			setupFlyVFX(hrp, torso, session)
@@ -239,8 +248,8 @@ local function handleMainSequence(char, session, params, startupTrack)
 	end)
 	
 	-- Connect the connections to main track then store them in session
-	local connections = MoveUtils.connectMarkerSignals(mainTrack, mainTrackMarkers)
-	session:BulkAddAnimationMarker(connections)
+	local connections = MoveUtils.connectMarkerSignals(mainTrack, mainTrackMarkers) 
+	session:BulkAddAnimationMarker(connections) -- Session auto disconnects them if :Stop() is called
 end
 
 -- Main Move Function
@@ -271,14 +280,14 @@ return {
 		local session = MoveSession.new({
 			attacker = char,
 			attackerProperties = {
-				disableAutoRotate = true,
+				disableAutoRotate = true, -- disable auto rotate for the attacker
 				anchorHrp = true, -- anchors the hrp
 			},
 			moveName = script.Name,
 			sharedStates = {"IFrames", "CantUse", "InCutscene"}, -- For the attacker and target
 			extraStartFunction = function(self)
-				self:ApplyAttackerProperties()
-				self:SetSharedStatesToAttacker()
+				self:ApplyAttackerProperties() -- Applies the attacker properties
+				self:SetSharedStatesToAttacker() -- applied the shared states to the attacker for now
 			end,
 			-- Set cooldown
 			extraEndFunction = function()
@@ -290,7 +299,7 @@ return {
 		-- already running
 		if not session then return end
 
-		session:AddAnimation(startupTrack)
+		session:AddAnimation(startupTrack) -- Reference the track in session so session can stop it or pause it
 
 		session:Start()
 		
