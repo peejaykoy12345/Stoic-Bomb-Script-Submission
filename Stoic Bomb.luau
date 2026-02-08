@@ -1,7 +1,13 @@
 -- Stoic bomb move module for both player and npcs
 local Libraries = game:GetService("ServerScriptService").Libraries
+-- It works by taking the model of a player or an npc and an animation id to play
+-- If animation does not exist then it creates it
+-- If it does then it uses the cache to retrieve it
 local AnimationPlayer = require(Libraries.AnimationPlayer) -- Plays the animations
+-- CooldownManager fires a remote event to the client when a cooldown is set to trigger the gui
 local CooldownManager = require(Libraries.Combat.CooldownManager) -- Handles cooldowns
+-- Hitbox creates a hitbox object where I can modify the CFrame, Size, etc just like a normal basepart
+-- but with more reliable .Touched function utilizing :GetPartsInBounds()
 local Hitbox = require(Libraries.Combat.Hitbox) -- Hitbox
 local Damage = require(Libraries.Combat.Damage) -- Handles the damage
 local StateManager = require(Libraries.Combat.StateManager) -- Handles states
@@ -10,8 +16,14 @@ local MoveUtils = require(Libraries.Combat.MoveUtils) -- Common move utilities
 local MoveSession = require(Libraries.Combat.MoveSession) -- For move sessions (easy stop or pause)
 local Knockback = require(Libraries.Combat.Knockback) -- For velocity and knockback
 local CraterModule = require(Libraries.Effects.CraterModule) -- For craters
+-- I use pooling because calling :Destroy() is costy and for performance
+-- It works checking if vfx is in the pool and if not it clones a template 
+-- after done using the vfx is returned to the pool
+-- It has a max limit of 50 vfx and the last one to be used gets destroyed to ensure that it doesn't
+-- pile up on memory
 local PoolingServiceVFX = require(Libraries.PerformanceLibraries.PoolingServiceVFX) -- For performance
 
+-- Config so that I can easily tweak move settings
 local CONFIG = {
 	MOVE_NAME = script.Name,
 	CRATER = {
@@ -55,6 +67,7 @@ local ASSETS = {
 
 local function createInitialCraters(position)
     -- Creates craters at the position + offset
+    -- It utilizes an open source module to make craters
 	CraterModule.formCrater({
 		Position = position + CONFIG.CRATER.Y_OFFSET,
 		Radius = CONFIG.CRATER.SMALL.Radius,
@@ -187,8 +200,11 @@ local function createExplosionHitbox(char, hrp, session, params)
 			false -- false means it's not blockable
 		) then return end
 		
+        -- When session:Stop() is called an auto stun punish is called on the user
+        -- This feature is toggleable on session configs
 		session:AddTarget(hitChar) -- For auto stun punish
 
+        -- Applies damage
 		Damage.ApplyDamage(char, hitChar, damage)
 		
 		local Knockback_Settings = CONFIG.KNOCKBACK
@@ -200,6 +216,7 @@ local function createExplosionHitbox(char, hrp, session, params)
 			Vector3.new(0, 1, 0) -- Direction (upwards)
 		)
 		
+        -- An open source module handles the ragdoll trigger listener
 		-- Ragdoll the victim
 		local ragdollTrigger = hitChar:FindFirstChild("RagdollTrigger")
 		if ragdollTrigger then -- RagdollTrigger has a listener which ragdolls the victim if it turns to true and unragdoll if false
@@ -262,41 +279,53 @@ return {
 			return
 		end
 
+        -- Start the startupTrack
 		local startupTrack = AnimationPlayer.PlayAnimation(char, ANIMATION_IDS.STARTUP)
 
 		local hrp = char:FindFirstChild("HumanoidRootPart")
 		local torso = char:FindFirstChild("Torso")
-		if not hrp or not torso then return end
+		if not hrp or not torso then return end -- Safety
 
-		createInitialCraters(hrp.Position)
+		createInitialCraters(hrp.Position) -- Purely design choice craters make the move more strong
 	
 		-- Make a move session
 		-- If session stops everything stops
 		-- Handles any possible errors
 		-- References animations, vfx, sounds to pause or stop them
 		-- Session methods like session:AddVFX() or session:AddAnimation() makes it references vfx or animations that don't outlast session
-		-- By referencing them session can delete the vfx or stop the animation if it is stopped by another script 
+		-- By referencing them session can delete the vfx or stop the animation if it is stopped by another script or is interrupted by a move
 		-- (By being detected by hitbox automatically stops the victim move session)
+        -- It works by using methods to add references to anims, vfx, and storing them until it is stopped
+        -- I used this so that it is easy to stop a move when the player is damaged and for easy one-line stops on moves
 		local session = MoveSession.new({
 			attacker = char,
+            -- I have an attacker properties table because in cases like this where only an attacker should have
+            -- properties modified I can do that. I also added this because I don't want to write more lines of code
+            -- just to disable the humanoid auto rotate or to anchor the hrp and session needs to revert them anyway when
+            -- it is stopped
 			attackerProperties = {
 				disableAutoRotate = true, -- disable auto rotate for the attacker
 				anchorHrp = true, -- anchors the hrp
 			},
 			moveName = script.Name,
+            -- I used shared states because
 			sharedStates = {"IFrames", "CantUse", "InCutscene"}, -- For the attacker and target
+            -- extraStartFunction is purely design choice I wanted the methods to be applied when :Start() is called
 			extraStartFunction = function(self)
+                -- The reason I have to manually apply this is because in some moves you don't want properties
+                -- or states to be applied after it started
 				self:ApplyAttackerProperties() -- Applies the attacker properties
 				self:SetSharedStatesToAttacker() -- applied the shared states to the attacker for now
 			end,
-			-- Set cooldown
+			-- extraEndFunction is a function that is called at the end of :Stop() and it is used
+            -- when setting cooldowns, or additional stuff
 			extraEndFunction = function()
 				CooldownManager.SetCooldown(char, CONFIG.MOVE_NAME, CONFIG.COOLDOWN)
 			end,
 		})
 		
 		-- Sometimes session creation is cancelled if another session is
-		-- already running
+		-- already running.
 		if not session then return end
 
 		session:AddAnimation(startupTrack) -- Reference the track in session so session can stop it or pause it
